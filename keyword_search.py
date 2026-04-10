@@ -110,7 +110,7 @@ def process_single_json(file_obj, targets, is_uploaded=True, split_array=False):
 # 主页面
 def json_keyword_search_page():
     st.title("🔍 图片/视频JSON关键词批量匹配")
-    st.caption("配置项已移至左侧边栏，主界面仅保留上传和结果")
+
 
     # ======================
     # 所有配置 → 左侧边栏
