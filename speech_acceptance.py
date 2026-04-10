@@ -176,7 +176,7 @@ def parse_speech_annotation_json(file_obj):
 # ------------------------------
 def speech_acceptance_page():
     st.title("🎙️ 语音标注自动验收工具")
-    st.caption("完全匹配教材5.3.4要求，修正无声比例计算逻辑")
+
     init_speech_standards()
 
     # --------------------------
