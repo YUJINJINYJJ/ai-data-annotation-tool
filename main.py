@@ -1,5 +1,6 @@
 import streamlit as st
 from keyword_search import json_keyword_search_page
+from nlp_text_analyzer import nlp_text_analyzer_page
 from video_acceptance import video_acceptance_page
 from speech_acceptance import speech_acceptance_page
 
@@ -18,7 +19,9 @@ page = st.sidebar.radio(
     [
         "🔍 图片/视频JSON关键词匹配",
         "✅ 视频标注自动验收",
-        "🎙️ 语音标注自动验收"
+        "🎙️ 语音标注自动验收",
+        "📄 中文自然语言匹配分析"
+        
     ]
 )
 
@@ -29,6 +32,8 @@ elif page == "✅ 视频标注自动验收":
     video_acceptance_page()
 elif page == "🎙️ 语音标注自动验收":
     speech_acceptance_page()
+elif page == "📄 中文文本&关键词匹配分析":
+    nlp_text_analyzer_page()
 
 # 页脚
 st.divider()
