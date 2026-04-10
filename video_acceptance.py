@@ -31,14 +31,12 @@ DEFAULT_ACCEPTANCE_STANDARDS = [
     }
 ]
 
-
 # ------------------------------
 # 安全初始化
 # ------------------------------
 def init_standards():
     if "acceptance_standards" not in st.session_state:
         st.session_state.acceptance_standards = DEFAULT_ACCEPTANCE_STANDARDS.copy()
-
 
 def delete_standard(standard_id):
     new_list = []
@@ -47,7 +45,6 @@ def delete_standard(standard_id):
             new_list.append(s)
     st.session_state.acceptance_standards = new_list
     st.rerun()
-
 
 def add_new_standard():
     new_id = str(uuid.uuid4())
@@ -60,11 +57,9 @@ def add_new_standard():
     })
     st.rerun()
 
-
 def reset_to_default():
     st.session_state.acceptance_standards = DEFAULT_ACCEPTANCE_STANDARDS.copy()
     st.rerun()
-
 
 # ------------------------------
 # JSON 解析
@@ -102,7 +97,6 @@ def parse_single_video_annotation(item, file_name):
     except Exception:
         return {"status": "error", "file_name": file_name}
 
-
 def parse_video_annotation_json(file_obj):
     results = []
     try:
@@ -117,7 +111,6 @@ def parse_video_annotation_json(file_obj):
         return [{"status": "invalid_json", "file_name": file_obj.name}]
     except Exception:
         return [{"status": "error", "file_name": file_obj.name}]
-
 
 # ------------------------------
 # 主页面
@@ -137,11 +130,9 @@ def video_acceptance_page():
             with cols[0]:
                 s["video_name"] = st.text_input("视频名", value=s.get("video_name", ""), key=f"v_{s['id']}")
             with cols[1]:
-                s["min_frames"] = st.number_input("最低帧数", min_value=1, value=s.get("min_frames", 200),
-                                                  key=f"f_{s['id']}")
+                s["min_frames"] = st.number_input("最低帧数", min_value=1, value=s.get("min_frames", 200), key=f"f_{s['id']}")
             with cols[2]:
-                s["min_targets"] = st.number_input("最低目标数", min_value=1, value=s.get("min_targets", 1),
-                                                   key=f"t_{s['id']}")
+                s["min_targets"] = st.number_input("最低目标数", min_value=1, value=s.get("min_targets", 1), key=f"t_{s['id']}")
             with cols[3]:
                 s["description"] = st.text_input("描述", value=s.get("description", ""), key=f"d_{s['id']}")
             with cols[4]:
@@ -157,7 +148,17 @@ def video_acceptance_page():
     # 上传 & 验收
     # --------------------------
     st.subheader("📤 上传JSON文件")
-    uploaded_jsons = st.file_uploader("选择JSON", type="json", accept_multiple_files=True)
+    uploaded_jsons = st.file_uploader(
+        "选择JSON",
+        type="json",
+        accept_multiple_files=True,
+        key="video_uploader"
+    )
+    # 一键清空上传文件
+    if st.button("🗑️ 清空所有上传文件", use_container_width=True):
+        if "video_uploader" in st.session_state:
+            del st.session_state.video_uploader
+        st.rerun()
 
     st.subheader("📝 验收信息")
     col1, col2 = st.columns(2)
@@ -198,17 +199,17 @@ def video_acceptance_page():
         acceptance_results = []
         for res in success_parses:
             vname = res.get("video_name", "")
-
+            
             # 后缀模糊匹配：只要实际视频名以标准视频名结尾就匹配
             matched_std = None
             for std in standard_list:
                 if vname.endswith(std["video_suffix"]):
                     matched_std = std
                     break
-
+            
             # 没匹配到用默认
             if not matched_std:
-                matched_std = {"min_frames": 200, "min_targets": 1, "description": "默认标准"}
+                matched_std = {"min_frames":200, "min_targets":1, "description":"默认标准"}
 
             ok = True
             reason = []
@@ -242,20 +243,19 @@ def video_acceptance_page():
         cols[0].metric("总视频数", total)
         cols[1].metric("合格", ok_cnt)
         cols[2].metric("不合格", total - ok_cnt)
-        cols[3].metric("合格率", f"{ok_cnt / total * 100:.1f}%" if total > 0 else 0)
+        cols[3].metric("合格率", f"{ok_cnt/total*100:.1f}%" if total>0 else 0)
 
         st.dataframe(acceptance_results, use_container_width=True, height=400)
 
         # 导出
         st.divider()
         st.subheader("📥 导出报告")
-        rows = [["视频标注验收报告"], ["验收员", inspector], ["时间", inspection_time.strftime("%Y-%m-%d")], []]
+        rows = [["视频标注验收报告"],["验收员", inspector],["时间", inspection_time.strftime("%Y-%m-%d")],[]]
         if acceptance_results:
             rows.append(list(acceptance_results[0].keys()))
             for item in acceptance_results:
                 rows.append([str(item[k]) for k in item.keys()])
-
+        
         csv_file = create_csv_in_memory(None, rows)
-        st.download_button("📄 下载报告", csv_file, f"验收报告_{inspection_time.strftime('%Y%m%d')}.csv",
-                           use_container_width=True)
+        st.download_button("📄 下载报告", csv_file, f"验收报告_{inspection_time.strftime('%Y%m%d')}.csv", use_container_width=True)
         st.success("✅ 验收完成！")
