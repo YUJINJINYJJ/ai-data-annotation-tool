@@ -6,7 +6,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from utils import create_csv_in_memory
 
-# 教材默认语音验收标准（完全匹配教材5.3.4要求）
 DEFAULT_SPEECH_STANDARDS = [
     {
         "id": "speech04_default",
@@ -179,6 +178,13 @@ def speech_acceptance_page():
 
     init_speech_standards()
 
+    # 左侧边栏配置
+    with st.sidebar:
+        st.header("⚙️ 处理配置")
+        max_workers = st.slider("⚡ 并行处理线程数", 2, 16, 8)
+        st.divider()
+        st.caption("💡 支持批量上传JSON文件")
+
     # --------------------------
     # 验收标准面板
     # --------------------------
@@ -259,7 +265,7 @@ def speech_acceptance_page():
 
         with st.spinner("解析中..."):
             all_parse_results = []
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(parse_speech_annotation_json, f): f for f in uploaded_jsons}
                 for future in as_completed(futures):
                     all_parse_results.extend(future.result())

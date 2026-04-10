@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import re
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from utils import create_csv_in_memory, create_dict_csv_in_memory
 
 def nlp_text_analyzer_page():
@@ -11,6 +12,13 @@ def nlp_text_analyzer_page():
 
     st.title("📄 批量中文提取 & 关键词统计（一行一个文件）")
     st.caption("中文分段分隔显示 | 关键词可开关 | 自动统计次数")
+
+    # 左侧边栏配置
+    with st.sidebar:
+        st.header("⚙️ 处理配置")
+        max_workers = st.slider("⚡ 并行处理线程数", 2, 16, 8)
+        st.divider()
+        st.caption("💡 支持批量上传CSV/JSON文件")
 
     # 清空
     if st.button("🗑️ 清空所有", use_container_width=True):
@@ -54,56 +62,61 @@ def nlp_text_analyzer_page():
             clean_input = keyword_input.strip().replace("，", ",")
             keywords = [k.strip() for k in clean_input.split(",") if k.strip()]
 
-        with st.spinner("正在提取中文并统计..."):
-            for f in uploaded_files:
-                try:
-                    ext = f.name.split(".")[-1].lower()
-                    full_text = ""
+        # 处理单个文件的函数
+        def process_file(f):
+            try:
+                ext = f.name.split(".")[-1].lower()
+                full_text = ""
 
-                    # 读取整个文件内容
-                    if ext == "csv":
-                        df = pd.read_csv(f, encoding="utf-8-sig", dtype=str).fillna("")
-                        full_text = " ".join(df.stack().astype(str).tolist())
-                    elif ext == "json":
-                        full_text = str(json.load(f))
+                # 读取整个文件内容
+                if ext == "csv":
+                    df = pd.read_csv(f, encoding="utf-8-sig", dtype=str).fillna("")
+                    full_text = " ".join(df.stack().astype(str).tolist())
+                elif ext == "json":
+                    full_text = str(json.load(f))
 
-                    # 1. 提取所有中文 → 分隔显示
-                    cn_list = cn_pattern.findall(full_text)
-                    chinese_text = "、".join(cn_list) if cn_list else "(无中文)"
+                # 1. 提取所有中文 → 分隔显示
+                cn_list = cn_pattern.findall(full_text)
+                chinese_text = "、".join(cn_list) if cn_list else "(无中文)"
 
-                    # 2. 关键词统计（只有开启才计算）
-                    hit_info = {}
-                    if enable_key and keywords:
-                        # 统计每个关键词出现次数
-                        count_dict = Counter()
-                        for kw in keywords:
-                            count_dict[kw] = full_text.count(kw)
-                        # 命中的词
-                        hit_kws = [kw for kw in keywords if count_dict[kw] > 0]
-                        total_hit = sum(count_dict.values())
+                # 2. 关键词统计（只有开启才计算）
+                hit_info = {}
+                if enable_key and keywords:
+                    # 统计每个关键词出现次数
+                    count_dict = Counter()
+                    for kw in keywords:
+                        count_dict[kw] = full_text.count(kw)
+                    # 命中的词
+                    hit_kws = [kw for kw in keywords if count_dict[kw] > 0]
+                    total_hit = sum(count_dict.values())
 
-                        hit_info = {
-                            "是否命中": "是" if hit_kws else "否",
-                            "命中关键词": " | ".join(hit_kws) if hit_kws else "无",
-                            "各关键词出现次数": " | ".join([f"{k}:{v}" for k, v in count_dict.items()]),
-                            "总命中次数": total_hit
-                        }
-
-                    # 构造一行（一个文件一行）
-                    row = {
-                        "文件名": f.name,
-                        "提取全部中文（分隔）": chinese_text
+                    hit_info = {
+                        "是否命中": "是" if hit_kws else "否",
+                        "命中关键词": " | ".join(hit_kws) if hit_kws else "无",
+                        "各关键词出现次数": " | ".join([f"{k}:{v}" for k, v in count_dict.items()]),
+                        "总命中次数": total_hit
                     }
-                    if enable_key:
-                        row.update(hit_info)
 
-                    rows.append(row)
+                # 构造一行（一个文件一行）
+                row = {
+                    "文件名": f.name,
+                    "提取全部中文（分隔）": chinese_text
+                }
+                if enable_key:
+                    row.update(hit_info)
 
-                except Exception as e:
-                    row = {"文件名": f.name + "（读取失败）", "提取全部中文（分隔）": ""}
-                    if enable_key:
-                        row.update({"是否命中": "", "命中关键词": "", "各关键词出现次数": "", "总命中次数": ""})
-                    rows.append(row)
+                return row
+            except Exception as e:
+                row = {"文件名": f.name + "（读取失败）", "提取全部中文（分隔）": ""}
+                if enable_key:
+                    row.update({"是否命中": "", "命中关键词": "", "各关键词出现次数": "", "总命中次数": ""})
+                return row
+
+        with st.spinner("正在提取中文并统计..."):
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(process_file, f): f for f in uploaded_files}
+                for future in as_completed(futures):
+                    rows.append(future.result())
 
             st.session_state["nlp_result"] = pd.DataFrame(rows)
 

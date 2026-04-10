@@ -120,6 +120,13 @@ def video_acceptance_page():
     st.caption("支持带前缀视频名匹配，修改参数实时生效")
     init_standards()
 
+    # 左侧边栏配置
+    with st.sidebar:
+        st.header("⚙️ 处理配置")
+        max_workers = st.slider("⚡ 并行处理线程数", 2, 16, 8)
+        st.divider()
+        st.caption("💡 支持批量上传JSON文件")
+
     # --------------------------
     # 验收标准面板
     # --------------------------
@@ -186,7 +193,7 @@ def video_acceptance_page():
 
         with st.spinner("解析中..."):
             all_parse_results = []
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(parse_video_annotation_json, f): f for f in uploaded_jsons}
                 for future in as_completed(futures):
                     all_parse_results.extend(future.result())
