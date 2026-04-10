@@ -5,12 +5,115 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from utils import create_csv_in_memory, create_dict_csv_in_memory
 
+# 核心搜索函数
+def search_json_data(data, targets):
+    matches = []
+    if isinstance(data, dict):
+        for v in data.values():
+            matches.extend(search_json_data(v, targets))
+    elif isinstance(data, list):
+        for item in data:
+            matches.extend(search_json_data(item, targets))
+    else:
+        s = str(data).lower()
+        for t in targets:
+            if t.lower() in s:
+                matches.append({"value": str(data), "keyword": t})
+                break
+    return matches
+
+# 阈值校验
+def check_json_threshold(file_count, threshold_dict):
+    is_pass = True
+    fail = []
+    for kw, m in threshold_dict.items():
+        a = file_count.get(kw, 0)
+        if a < m:
+            is_pass = False
+            fail.append(f"{kw}实际{a}次，要求≥{m}次")
+    return is_pass, "; ".join(fail)
+
+# 生成校验报告
+def generate_json_verification_report(success_results, targets, threshold_dict, total_files):
+    if not threshold_dict:
+        return None
+    total = len(success_results)
+    p = 0
+    f = 0
+    for r in success_results:
+        r["is_pass"], r["fail_reason"] = check_json_threshold(r["keyword_count"], threshold_dict)
+        p += 1 if r["is_pass"] else 0
+        f += 1 if not r["is_pass"] else 0
+    return {
+        "global_stats": {
+            "总扫描文件数": total_files,
+            "有效JSON文件数": total,
+            "达标文件数": p,
+            "未达标文件数": f,
+            "文件达标率": f"{p/total*100:.2f}%" if total > 0 else "0%"
+        },
+        "all_files": success_results
+    }
+
+# 处理单个JSON文件
+def process_single_json(file_obj, targets, is_uploaded=True, split_array=False):
+    results = []
+    try:
+        if is_uploaded:
+            file_obj.seek(0)
+            json_data = json.load(file_obj)
+            file_name = file_obj.name
+            file_path = f"上传文件/{file_name}"
+        else:
+            with open(file_obj, "r", encoding="utf-8") as f:
+                json_data = json.load(f)
+            file_name = os.path.basename(file_obj)
+            file_path = file_obj
+
+        if split_array and isinstance(json_data, list):
+            for idx, item in enumerate(json_data):
+                item_results = search_json_data(item, targets)
+                file_count = {t: 0 for t in targets}
+                match_values = []
+                for res in item_results:
+                    file_count[res["keyword"]] += 1
+                    match_values.append(res["value"])
+                results.append({
+                    "status": "success",
+                    "file_path": file_path,
+                    "file_name": f"{file_name} (第{idx+1}个)",
+                    "total_match": len(item_results),
+                    "keyword_count": file_count,
+                    "match_values": match_values
+                })
+        else:
+            all_results = search_json_data(json_data, targets)
+            file_count = {t: 0 for t in targets}
+            match_values = []
+            for res in all_results:
+                file_count[res["keyword"]] += 1
+                match_values.append(res["value"])
+            results.append({
+                "status": "success",
+                "file_path": file_path,
+                "file_name": file_name,
+                "total_match": len(all_results),
+                "keyword_count": file_count,
+                "match_values": match_values
+            })
+        return results
+    except json.JSONDecodeError:
+        return [{"status": "invalid_json", "file_name": getattr(file_obj, "name", str(file_obj))}]
+    except Exception as e:
+        return [{"status": "error", "file_name": getattr(file_obj, "name", str(file_obj)), "error": str(e)}]
+
+# 主页面
 def json_keyword_search_page():
     st.title("🔍 图片/视频JSON关键词批量匹配")
-    st.caption("配置已移至左侧边栏，主界面专注上传与结果")
+    st.caption("配置项已移至左侧边栏，主界面仅保留上传和结果")
 
     # ======================
-    # 【全部配置移到左边：侧边栏】
+    # 所有配置 → 左侧边栏
     # ======================
     with st.sidebar:
         st.header("⚙️ 匹配配置")
@@ -42,14 +145,14 @@ def json_keyword_search_page():
         st.caption("💡 支持批量上传JSON文件")
 
     # ======================
-    # 【主界面：只保留上传】
+    # 主界面：上传区域
     # ======================
     st.subheader("📤 上传JSON文件")
     tab1, tab2 = st.tabs(["📤 上传JSON文件", "📂 本地文件夹（仅本地运行）"])
 
     with tab1:
         uploaded_files = st.file_uploader(
-            "选择多个JSON文件（支持百/千份批量上传）",
+            "选择多个JSON文件（支持批量上传）",
             type="json",
             accept_multiple_files=True,
             key="keyword_uploader"
@@ -62,23 +165,25 @@ def json_keyword_search_page():
     with tab2:
         folder_path = st.text_input(
             "输入本地JSON文件夹绝对路径",
-            placeholder="例如：D:\\data\\json_files 或 /home/user/json_files"
+            placeholder="例如：D:\\data\\json_files"
         )
 
     # ======================
-    # 开始匹配按钮
+    # 开始匹配
     # ======================
     if st.button("🚀 开始批量匹配", type="primary", use_container_width=True):
         if not keyword_input.strip():
             st.error("❌ 请输入查找关键词！")
             st.stop()
         
+        # 处理关键词
         keyword_input_clean = keyword_input.strip().replace('，', ',')
         targets = [kw.strip() for kw in keyword_input_clean.split(",") if kw.strip()]
         if not targets:
             st.error("❌ 关键词不能为空！")
             st.stop()
         
+        # 处理阈值
         threshold_dict = {}
         if enable_threshold and threshold_text.strip():
             for line in threshold_text.split("\n"):
@@ -91,6 +196,7 @@ def json_keyword_search_page():
                 except:
                     st.warning(f"⚠️ 阈值格式错误：{line}，已跳过")
         
+        # 收集文件
         files_to_process = []
         if uploaded_files:
             files_to_process = [(f, True) for f in uploaded_files]
@@ -104,7 +210,8 @@ def json_keyword_search_page():
             st.error("❌ 未找到任何JSON文件！")
             st.stop()
         
-        with st.spinner(f"🔍 正在批量处理 {len(files_to_process)} 个文件..."):
+        # 批量处理
+        with st.spinner(f"🔍 正在处理 {len(files_to_process)} 个文件..."):
             all_results = []
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
@@ -114,21 +221,23 @@ def json_keyword_search_page():
                 for future in as_completed(futures):
                     all_results.extend(future.result())
         
+        # 结果分类
         success_results = [r for r in all_results if r["status"] == "success"]
         invalid_results = [r for r in all_results if r["status"] == "invalid_json"]
         error_results = [r for r in all_results if r["status"] == "error"]
         total_files = len(all_results)
         
+        # 生成校验报告
         verification_report = None
         if enable_threshold and threshold_dict:
             verification_report = generate_json_verification_report(success_results, targets, threshold_dict, total_files)
         
+        # 统计数据
         matched_files = len([r for r in success_results if r["total_match"] > 0])
         total_matches = sum(r["total_match"] for r in success_results)
-        all_values = []
+        value_counter = Counter()
         for r in success_results:
-            all_values.extend(r["match_values"])
-        value_counter = Counter(all_values)
+            value_counter.update(r["match_values"])
 
         # ======================
         # 结果展示
@@ -143,6 +252,7 @@ def json_keyword_search_page():
         cols[4].metric("无效JSON", len(invalid_results))
         cols[5].metric("读取失败", len(error_results))
         
+        # 达标统计
         if verification_report:
             st.divider()
             st.subheader("✅ 关键字达标检测统计")
@@ -152,12 +262,17 @@ def json_keyword_search_page():
             cols2[2].metric("文件达标率", verification_report["global_stats"]["文件达标率"])
             cols2[3].metric("校验关键字数", len(threshold_dict))
         
+        # 详情表格
         st.divider()
         st.subheader("📋 分文件匹配详情")
         detail_data = []
         if success_results:
             for r in success_results:
-                row = {"文件名": r["file_name"], "文件路径": r["file_path"], "总匹配数": r["total_match"]}
+                row = {
+                    "文件名": r["file_name"],
+                    "文件路径": r["file_path"],
+                    "总匹配数": r["total_match"]
+                }
                 for kw in targets:
                     row[f"{kw}出现次数"] = r["keyword_count"][kw]
                 if verification_report:
@@ -166,13 +281,22 @@ def json_keyword_search_page():
                 row["匹配值预览"] = " | ".join(r["match_values"][:10]) + ("..." if len(r["match_values"]) > 10 else "")
                 detail_data.append(row)
             
+            # 筛选
             if verification_report:
                 filter_option = st.radio("筛选显示：", ["全部文件", "仅达标文件", "仅未达标文件"], horizontal=True)
-                display_data = [d for d in detail_data if (filter_option == "全部文件" or (filter_option == "仅达标文件" and d["校验状态"] == "✅ 达标") or (filter_option == "仅未达标文件" and d["校验状态"] == "❌ 未达标"))]
+                display_data = []
+                for d in detail_data:
+                    if filter_option == "全部文件":
+                        display_data.append(d)
+                    elif filter_option == "仅达标文件" and d["校验状态"] == "✅ 达标":
+                        display_data.append(d)
+                    elif filter_option == "仅未达标文件" and d["校验状态"] == "❌ 未达标":
+                        display_data.append(d)
             else:
                 display_data = detail_data
             st.dataframe(display_data, use_container_width=True, height=400)
         
+        # 异常文件
         if invalid_results or error_results:
             with st.expander("⚠️ 异常文件列表（已跳过）"):
                 if invalid_results:
@@ -180,22 +304,29 @@ def json_keyword_search_page():
                 if error_results:
                     st.write("❌ 读取失败文件：", [f"{r['file_name']}: {r['error']}" for r in error_results])
         
+        # 值统计
         st.divider()
         st.subheader("🔢 匹配值出现次数统计（降序）")
         value_data = [{"匹配值": k, "出现次数": v} for k, v in sorted(value_counter.items(), key=lambda x: x[1], reverse=True)]
         if value_data:
             st.dataframe(value_data, use_container_width=True, height=300)
         
+        # 导出
         st.divider()
         st.subheader("📥 报告导出")
         name_suffix = "_".join(targets)
+        
         if verification_report:
-            report_rows = [["【全局校验统计】"],[k,v] for k,v in verification_report["global_stats"].items()]
+            report_rows = [["【全局校验统计】"]]
+            for k,v in verification_report["global_stats"].items():
+                report_rows.append([k, v])
             report_rows.append([])
             report_headers = ["文件名","文件路径","总匹配数"] + [f"{kw}出现次数" for kw in targets] + ["校验状态","未达标原因","所有匹配值"]
             report_rows.append(report_headers)
             for r in verification_report["all_files"]:
-                row = [r["file_name"],r["file_path"],str(r["total_match"])] + [str(r["keyword_count"][kw]) for kw in targets] + ["✅ 达标" if r["is_pass"] else "❌ 未达标", r["fail_reason"] if not r["is_pass"] else "-", " | ".join(r["match_values"])]
+                row = [r["file_name"],r["file_path"],str(r["total_match"])]
+                row.extend([str(r["keyword_count"][kw]) for kw in targets])
+                row.extend(["✅ 达标" if r["is_pass"] else "❌ 未达标", r["fail_reason"] if not r["is_pass"] else "-", " | ".join(r["match_values"])])
                 report_rows.append(row)
             report_csv = create_csv_in_memory(None, report_rows)
             st.download_button("📄 下载完整校验报告", report_csv, f"JSON批量校验报告_{name_suffix}.csv", use_container_width=True, type="primary")
@@ -206,81 +337,5 @@ def json_keyword_search_page():
         if value_data:
             count_csv = create_dict_csv_in_memory(["匹配值","出现次数"], value_data)
             st.download_button("📊 下载值统计CSV", count_csv, f"值出现次数统计_{name_suffix}.csv", use_container_width=True)
+        
         st.success("✅ 批量匹配完成！")
-
-# --------------------------
-# 辅助函数
-# --------------------------
-def process_single_json(file_obj, targets, is_uploaded=True, split_array=False):
-    results = []
-    try:
-        if is_uploaded:
-            file_obj.seek(0)
-            json_data = json.load(file_obj)
-            file_name = file_obj.name
-            file_path = f"上传文件/{file_name}"
-        else:
-            with open(file_obj, "r", encoding="utf-8") as f:
-                json_data = json.load(f)
-            file_name = os.path.basename(file_obj)
-            file_path = file_obj
-
-        if split_array and isinstance(json_data, list):
-            for idx, item in enumerate(json_data):
-                item_results = search_json_data(item, targets)
-                file_count = {t:0 for t in targets}
-                match_values = []
-                for res in item_results:
-                    file_count[res["keyword"]] +=1
-                    match_values.append(res["value"])
-                results.append({"status":"success","file_path":file_path,"file_name":f"{file_name} (第{idx+1}个)","total_match":len(item_results),"keyword_count":file_count,"match_values":match_values})
-        else:
-            all_results = search_json_data(json_data, targets)
-            file_count = {t:0 for t in targets}
-            match_values = []
-            for res in all_results:
-                file_count[res["keyword"]] +=1
-                match_values.append(res["value"])
-            results.append({"status":"success","file_path":file_path,"file_name":file_name,"total_match":len(all_results),"keyword_count":file_count,"match_values":match_values})
-        return results
-    except json.JSONDecodeError:
-        return [{"status":"invalid_json","file_name":getattr(file_obj,"name",str(file_obj))}]
-    except Exception as e:
-        return [{"status":"error","file_name":getattr(file_obj,"name",str(file_obj)),"error":str(e)}]
-
-def search_json_data(data, targets):
-    matches = []
-    if isinstance(data, dict):
-        for v in data.values():
-            matches.extend(search_json_data(v, targets))
-    elif isinstance(data, list):
-        for item in data:
-            matches.extend(search_json_data(item, targets))
-    else:
-        s = str(data).lower()
-        for t in targets:
-            if t.lower() in s:
-                matches.append({"value":str(data),"keyword":t})
-                break
-    return matches
-
-def check_json_threshold(file_count, threshold_dict):
-    is_pass = True
-    fail = []
-    for kw, m in threshold_dict.items():
-        a = file_count.get(kw,0)
-        if a < m:
-            is_pass=False
-            fail.append(f"{kw}实际{a}次，要求≥{m}次")
-    return is_pass, "; ".join(fail)
-
-def generate_json_verification_report(success_results, targets, threshold_dict, total_files):
-    if not threshold_dict:
-        return None
-    total = len(success_results)
-    p=0;f=0
-    for r in success_results:
-        r["is_pass"], r["fail_reason"] = check_json_threshold(r["keyword_count"], threshold_dict)
-        p+=1 if r["is_pass"] else 0
-        f+=1 if not r["is_pass"] else 0
-    return {"global_stats":{"总扫描文件数":total_files,"有效JSON文件数":total,"达标文件数":p,"未达标文件数":f,"文件达标率":f"{p/total*100:.2f}%" if total>0 else "0%"},"all_files":success_results}
