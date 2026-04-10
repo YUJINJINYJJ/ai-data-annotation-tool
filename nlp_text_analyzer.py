@@ -1,234 +1,192 @@
 import streamlit as st
 import pandas as pd
 import json
-import os
 from utils import create_csv_in_memory, create_dict_csv_in_memory
 
 def nlp_text_analyzer_page():
-    # 页面初始化，确保session_state正常
     if "nlp_results" not in st.session_state:
         st.session_state["nlp_results"] = None
 
-    st.title("📄 中文自然语言&关键词匹配分析")
-    st.caption("支持 CSV / JSON 上传，自动识别文本列，可选关键词匹配")
+    st.title("📄 中文自然语言批量分析（多文件）")
+    st.caption("支持批量上传 CSV / JSON，统一关键词匹配，汇总统计+导出")
 
-    # 一键清空按钮（放在最前面，确保加载正常）
+    # 一键清空
     if st.button("🗑️ 清空所有上传与结果", use_container_width=True):
-        # 清空相关session_state
         for k in list(st.session_state.keys()):
             if k.startswith("nlp_"):
                 del st.session_state[k]
         st.rerun()
 
-    # ----------------------
-    # 上传区
-    # ----------------------
-    st.subheader("📤 上传文件（CSV / JSON）")
-    uploaded_file = st.file_uploader(
-        "选择单个 CSV 或 JSON 文件",
+    # ======================
+    # 批量上传
+    # ======================
+    st.subheader("📤 批量上传文件（可多选 CSV / JSON）")
+    uploaded_files = st.file_uploader(
+        "选择多个文件",
         type=["csv", "json"],
+        accept_multiple_files=True,
         key="nlp_uploader"
     )
 
-    # 如果没有上传文件，显示提示+使用说明，避免页面空白
-    if uploaded_file is None:
-        st.info("ℹ️ 请上传 CSV 或 JSON 文件开始分析")
-        with st.expander("💡 使用说明", expanded=True):
+    if not uploaded_files:
+        st.info("ℹ️ 请批量上传 CSV 或 JSON 文件开始分析")
+        with st.expander("💡 使用说明"):
             st.markdown("""
-            1.  上传 **CSV** 或 **JSON** 格式的文本文件
-            2.  选择要分析的**中文文本列**
-            3.  （可选）开启关键词匹配，输入要查找的关键词
-            4.  点击「开始分析」，自动统计命中结果并导出
+            1. 可同时上传 **多个 .csv / .json**
+            2. 所有文件共用同一套关键词规则
+            3. 自动合并结果、统一统计命中率
+            4. 一键导出 **总汇总报告**
             """)
         return
 
-    # ----------------------
-    # 自动读取文件（加完整异常处理）
-    # ----------------------
-    try:
-        ext = uploaded_file.name.split(".")[-1].lower()
-        st.info(f"正在读取 {ext.upper()} 文件...")
+    st.success(f"✅ 已选择 {len(uploaded_files)} 个文件")
 
-        if ext == "csv":
-            # 读取CSV，自动识别编码，跳过错误行
-            df = pd.read_csv(uploaded_file, encoding="utf-8-sig", on_bad_lines="skip")
-        elif ext == "json":
-            data = json.load(uploaded_file)
-            if isinstance(data, list):
-                df = pd.DataFrame(data)
-            elif isinstance(data, dict):
-                df = pd.DataFrame([data])
-            else:
-                st.error("❌ JSON格式错误：仅支持数组或对象格式")
-                return
-        else:
-            st.error("❌ 不支持的文件格式，仅支持 CSV / JSON")
-            return
+    # ======================
+    # 统一配置（所有文件共用）
+    # ======================
+    st.subheader("🔍 统一配置")
+    text_col = st.text_input(
+        "文本列名（所有文件必须相同）",
+        value="content",
+        help="例如：content / text / 内容 / 文本"
+    )
 
-        # 检查是否为空
-        if df.empty:
-            st.error("❌ 文件内容为空，请重新上传")
-            return
-
-        st.success(f"✅ 读取成功！共 {len(df)} 行数据，{len(df.columns)} 列")
-        st.subheader("📋 文件预览（前5行）")
-        st.dataframe(df.head(5), use_container_width=True, hide_index=True)
-
-    except Exception as e:
-        st.error(f"❌ 文件读取失败：{str(e)}")
-        return
-
-    # ----------------------
-    # 选择要分析的中文文本列
-    # ----------------------
-    st.subheader("🔍 选择分析列")
-    text_cols = list(df.columns)
-    if not text_cols:
-        st.error("❌ 未检测到有效列，请检查文件格式")
-        return
-
-    text_col = st.selectbox("选择要分析的中文文本列", text_cols, help="选择包含中文自然语言的列")
-
-    # ----------------------
-    # 关键词匹配（可选）
-    # ----------------------
-    st.subheader("🔑 关键词匹配配置（可选）")
-    enable_keyword = st.checkbox("✅ 启用关键词匹配筛选", value=False, help="开启后可按关键词筛选文本")
-
+    st.subheader("🔑 关键词匹配（可选）")
+    enable_keyword = st.checkbox("启用关键词匹配", value=False)
     keyword_input = ""
     match_type = "包含（模糊）"
+
     if enable_keyword:
         keyword_input = st.text_input(
-            "输入关键词（多个用逗号分隔，支持中文逗号）",
-            placeholder="例如：人工智能,教育,大数据",
-            help="自动将中文逗号转换为英文逗号"
+            "关键词（逗号分隔，支持中文逗号）",
+            placeholder="人工智能,教育,大数据"
         )
         match_type = st.radio(
             "匹配方式",
-            ["包含（模糊匹配）", "完全相等（精确匹配）"],
-            horizontal=True,
-            help="包含：只要文本中有关键词即命中；完全相等：文本必须和关键词完全一致"
+            ["包含（模糊）", "完全相等（精确）"],
+            horizontal=True
         )
 
-    # ----------------------
-    # 开始分析按钮
-    # ----------------------
-    if st.button("🚀 开始分析", type="primary", use_container_width=True):
-        with st.spinner("🔍 正在分析文本..."):
-            try:
-                # 复制数据，避免修改原数据
-                res_df = df.copy()
-                # 统一文本格式，处理空值
-                res_df["_分析文本"] = res_df[text_col].fillna("").astype(str).str.strip()
-
-                # 处理关键词
-                keywords = []
-                if enable_keyword and keyword_input.strip():
-                    # 自动转换中文逗号为英文逗号
-                    clean_input = keyword_input.strip().replace("，", ",")
-                    keywords = [kw.strip() for kw in clean_input.split(",") if kw.strip()]
-
-                # 执行匹配
-                hit_list = []
-                hit_key_list = []
-
-                for txt in res_df["_分析文本"]:
-                    hit = False
-                    hit_keys = []
-
-                    if keywords:
-                        for kw in keywords:
-                            if not kw:
-                                continue
-                            # 根据匹配方式判断
-                            if match_type == "完全相等（精确匹配）":
-                                if txt == kw:
-                                    hit = True
-                                    hit_keys.append(kw)
-                            else:  # 包含（模糊匹配）
-                                if kw in txt:
-                                    hit = True
-                                    hit_keys.append(kw)
-
-                    hit_list.append("✅ 命中" if hit else "❌ 未命中")
-                    hit_key_list.append(" | ".join(hit_keys) if hit_keys else "-")
-
-                # 写入结果
-                res_df["是否命中关键词"] = hit_list
-                res_df["命中关键词"] = hit_key_list
-
-                # 保存到session_state
-                st.session_state["nlp_results"] = res_df
-
-            except Exception as e:
-                st.error(f"❌ 分析失败：{str(e)}")
-                return
-
-        # ----------------------
-        # 结果展示
-        # ----------------------
-        st.divider()
-        st.subheader("📊 分析结果")
-        res_df = st.session_state["nlp_results"]
-
-        if res_df is None or res_df.empty:
-            st.warning("⚠️ 无有效分析结果")
+    # ======================
+    # 开始批量分析
+    # ======================
+    if st.button("🚀 批量分析所有文件", type="primary", use_container_width=True):
+        if not text_col.strip():
+            st.error("请输入文本列名！")
             return
 
-        # 统计数据
-        total = len(res_df)
-        hit_count = len(res_df[res_df["是否命中关键词"] == "✅ 命中"]) if enable_keyword else 0
+        all_dfs = []
+        error_files = []
 
-        # 统计卡片
-        col1, col2, col3 = st.columns(3)
-        col1.metric("📄 总行数", total)
-        if enable_keyword:
-            col2.metric("🎯 命中行数", hit_count)
-            col3.metric("📈 命中率", f"{hit_count/total*100:.1f}%" if total > 0 else "0%")
+        # 处理关键词
+        keywords = []
+        if enable_keyword and keyword_input.strip():
+            clean_input = keyword_input.strip().replace("，", ",")
+            keywords = [k.strip() for k in clean_input.split(",") if k.strip()]
 
-        # 结果表格
-        st.subheader("📋 详细结果")
-        display_cols = [col for col in res_df.columns if col != "_分析文本"]
-        st.dataframe(
-            res_df[display_cols],
-            use_container_width=True,
-            height=400,
-            hide_index=True
-        )
+        with st.spinner(f"正在处理 {len(uploaded_files)} 个文件..."):
+            for f in uploaded_files:
+                try:
+                    ext = f.name.split(".")[-1].lower()
+                    if ext == "csv":
+                        df = pd.read_csv(f, encoding="utf-8-sig", on_bad_lines="skip")
+                    elif ext == "json":
+                        data = json.load(f)
+                        df = pd.DataFrame(data) if isinstance(data, list) else pd.DataFrame([data])
+                    else:
+                        continue
 
-        # ----------------------
-        # 导出结果
-        # ----------------------
+                    # 检查列是否存在
+                    if text_col not in df.columns:
+                        error_files.append(f"{f.name}（无列：{text_col}）")
+                        continue
+
+                    # 加来源文件名
+                    df["_来源文件"] = f.name
+                    df["_文本内容"] = df[text_col].fillna("").astype(str).str.strip()
+
+                    # 匹配
+                    hit_list = []
+                    hit_key_list = []
+                    for txt in df["_文本内容"]:
+                        hit = False
+                        hit_keys = []
+                        if keywords:
+                            for kw in keywords:
+                                if match_type == "完全相等（精确）":
+                                    if txt == kw:
+                                        hit = True
+                                        hit_keys.append(kw)
+                                else:
+                                    if kw in txt:
+                                        hit = True
+                                        hit_keys.append(kw)
+                        hit_list.append("✅ 命中" if hit else "❌ 未命中")
+                        hit_key_list.append(" | ".join(hit_keys) if hit_keys else "-")
+
+                    df["是否命中"] = hit_list
+                    df["命中关键词"] = hit_key_list
+                    all_dfs.append(df)
+
+                except Exception as e:
+                    error_files.append(f"{f.name}（错误：{str(e)[:50]}）")
+
+            # 汇总
+            if not all_dfs:
+                st.error("❌ 无有效文件可分析")
+                return
+
+            final_df = pd.concat(all_dfs, ignore_index=True)
+            st.session_state["nlp_results"] = final_df
+
+        # ======================
+        # 结果展示
+        # ======================
         st.divider()
-        st.subheader("📥 导出结果")
-        out_df = res_df.drop(columns=["_分析文本"], errors="ignore")
+        st.subheader("📊 批量汇总结果")
 
-        # 生成CSV
-        csv_bytes = create_dict_csv_in_memory(
-            list(out_df.columns),
-            out_df.to_dict("records")
-        )
+        total = len(final_df)
+        hit_cnt = len(final_df[final_df["是否命中"] == "✅ 命中"]) if enable_keyword else 0
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("总文件数", len(uploaded_files))
+        col2.metric("总行数", total)
+        col3.metric("命中行数", hit_cnt)
+        col4.metric("命中率", f"{hit_cnt/total*100:.1f}%" if total else 0)
+
+        # 显示表格
+        st.subheader("📋 完整结果（含来源文件）")
+        show_cols = ["_来源文件", text_col, "是否命中", "命中关键词"]
+        st.dataframe(final_df[show_cols], use_container_width=True, height=400)
+
+        # 错误文件
+        if error_files:
+            with st.expander("⚠️ 处理失败的文件"):
+                for e in error_files:
+                    st.write(e)
+
+        # ======================
+        # 导出总报告
+        # ======================
+        st.divider()
+        st.subheader("📥 导出批量汇总报告")
+        out_df = final_df.drop(columns=["_文本内容"], errors="ignore")
+        csv_data = create_dict_csv_in_memory(list(out_df.columns), out_df.to_dict("records"))
 
         st.download_button(
-            "💾 下载完整分析结果 CSV",
-            csv_bytes,
-            file_name=f"文本分析结果_{uploaded_file.name}",
+            "💾 下载全部结果 CSV",
+            csv_data,
+            file_name="批量文本分析总报告.csv",
             mime="text/csv",
-            use_container_width=True,
-            type="primary"
+            use_container_width=True
         )
 
-        st.success("✅ 分析完成！可点击上方按钮下载结果")
+        st.success("✅ 批量分析完成！")
 
-    # 刷新后保留历史结果
+    # 显示历史结果
     elif st.session_state["nlp_results"] is not None:
         st.divider()
-        st.subheader("📊 历史分析结果")
-        res_df = st.session_state["nlp_results"]
-        display_cols = [col for col in res_df.columns if col != "_分析文本"]
-        st.dataframe(
-            res_df[display_cols],
-            use_container_width=True,
-            height=400,
-            hide_index=True
-        )
+        st.subheader("📊 历史批量结果")
+        df = st.session_state["nlp_results"]
+        show_cols = ["_来源文件"] + [c for c in df.columns if c not in ["_来源文件","_文本内容"]]
+        st.dataframe(df[show_cols], use_container_width=True, height=400)
