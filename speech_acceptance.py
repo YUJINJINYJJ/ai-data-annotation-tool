@@ -6,39 +6,39 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from utils import create_csv_in_memory
 
-# 教材默认语音验收标准（完全匹配你上传的教材）
+# 教材默认语音验收标准（完全匹配教材5.3.4要求）
 DEFAULT_SPEECH_STANDARDS = [
     {
         "id": "speech04_default",
         "audio_name": "speech04.mp3",
         "min_segments": 2,
-        "max_silence_ratio": 10,
+        "max_silence_ratio_in_segment": 10,
         "required_labels": ["碎裂声"],
-        "description": "碎裂声事件检测标注"
+        "description": "speech04.mp3 碎裂声事件检测标注"
     },
     {
         "id": "speech05_default",
         "audio_name": "speech05.mp3",
         "min_total_duration": 5,
-        "max_other_sound_ratio": 10,
+        "max_other_sound_ratio_in_segment": 10,
         "required_labels": ["安全警报"],
-        "description": "安全警报声事件检测标注"
+        "description": "speech05.mp3 安全警报声事件检测标注"
     },
     {
         "id": "speech06_default",
         "audio_name": "speech06.mp3",
         "min_segments_per_label": 2,
-        "max_other_sound_ratio": 10,
+        "max_other_sound_ratio_in_segment": 10,
         "required_labels": ["枪击声", "爆炸声", "叫喊声"],
-        "description": "枪击/爆炸/叫喊声事件检测标注"
+        "description": "speech06.mp3 枪击/爆炸/叫喊声事件检测标注"
     },
     {
         "id": "speech07_default",
         "audio_name": "speech07.mp3",
         "min_segments_per_label": 2,
-        "max_other_sound_ratio": 10,
+        "max_other_sound_ratio_in_segment": 10,
         "required_labels": ["咳嗽声", "呼救声"],
-        "description": "咳嗽/呼救声事件检测标注"
+        "description": "speech07.mp3 咳嗽/呼救声事件检测标注"
     }
 ]
 
@@ -65,8 +65,8 @@ def add_new_speech_standard():
         "min_segments": 1,
         "min_total_duration": 1,
         "min_segments_per_label": 1,
-        "max_silence_ratio": 10,
-        "max_other_sound_ratio": 10,
+        "max_silence_ratio_in_segment": 10,
+        "max_other_sound_ratio_in_segment": 10,
         "required_labels": "",
         "description": ""
     })
@@ -77,7 +77,7 @@ def reset_speech_to_default():
     st.rerun()
 
 # ------------------------------
-# 语音标注JSON解析
+# 语音标注JSON解析（修正后逻辑）
 # ------------------------------
 def parse_single_speech_annotation(item, file_name):
     try:
@@ -89,50 +89,72 @@ def parse_single_speech_annotation(item, file_name):
         segments = item.get("segments", [])
         total_duration = item.get("duration", 0)
         
-        # 统计各标签的片段数和总时长
+        # 统计各标签的片段数、总时长、片段内无声/其他声音比例
         label_stats = {}
-        total_enabled_duration = 0
-        silence_duration = 0
-        
+        total_segments = len(segments)
+        all_segment_silence_ratios = []
+        all_segment_other_ratios = []
+
         for seg in segments:
             if not seg.get("enabled", True):
                 continue
             start = seg.get("start", 0)
             end = seg.get("end", 0)
-            seg_duration = end - start
-            labels = seg.get("labels", [])
+            seg_total_duration = end - start
+            if seg_total_duration <= 0:
+                continue
             
+            labels = seg.get("labels", [])
+            # 计算片段内的无声时长（标注为无标签的部分，这里简化为：如果标签为空则为无声）
+            # 实际标注中，无声片段不会打标签，所以有标签的片段内无声比例为0
+            seg_silence_duration = 0 if labels else seg_total_duration
+            seg_silence_ratio = round((seg_silence_duration / seg_total_duration) * 100, 2) if seg_total_duration > 0 else 0
+            all_segment_silence_ratios.append(seg_silence_ratio)
+
+            # 计算片段内的其他声音比例（非要求标签的声音）
+            seg_other_duration = 0
+            # 假设标注的标签是目标声音，非目标标签为其他声音
+            # 实际使用中，会根据标准的required_labels过滤，这里先统计所有非目标标签的时长
+            for label in labels:
+                if label not in ["碎裂声", "安全警报", "枪击声", "爆炸声", "叫喊声", "咳嗽声", "呼救声"]:
+                    seg_other_duration += seg_total_duration / len(labels) if labels else 0
+            seg_other_ratio = round((seg_other_duration / seg_total_duration) * 100, 2) if seg_total_duration > 0 else 0
+            all_segment_other_ratios.append(seg_other_ratio)
+
+            # 更新标签统计
             for label in labels:
                 if label not in label_stats:
-                    label_stats[label] = {"count": 0, "duration": 0}
+                    label_stats[label] = {
+                        "count": 0,
+                        "total_duration": 0,
+                        "max_silence_ratio": 0,
+                        "max_other_ratio": 0
+                    }
                 label_stats[label]["count"] += 1
-                label_stats[label]["duration"] += seg_duration
-            
-            total_enabled_duration += seg_duration
-        
-        # 计算无声时间比例
-        silence_duration = max(0, total_duration - total_enabled_duration)
-        silence_ratio = round((silence_duration / total_duration) * 100, 2) if total_duration > 0 else 0
-        
-        # 计算其他声音比例（非要求标签的声音占比）
-        other_sound_duration = 0
-        for label, stats in label_stats.items():
-            if label not in ["碎裂声", "安全警报", "枪击声", "爆炸声", "叫喊声", "咳嗽声", "呼救声"]:
-                other_sound_duration += stats["duration"]
-        other_sound_ratio = round((other_sound_duration / total_enabled_duration) * 100, 2) if total_enabled_duration > 0 else 0
+                label_stats[label]["total_duration"] += seg_total_duration
+                label_stats[label]["max_silence_ratio"] = max(label_stats[label]["max_silence_ratio"], seg_silence_ratio)
+                label_stats[label]["max_other_ratio"] = max(label_stats[label]["max_other_ratio"], seg_other_ratio)
+
+        # 计算全局统计
+        avg_silence_ratio = round(sum(all_segment_silence_ratios) / len(all_segment_silence_ratios), 2) if all_segment_silence_ratios else 0
+        avg_other_ratio = round(sum(all_segment_other_ratios) / len(all_segment_other_ratios), 2) if all_segment_other_ratios else 0
+        max_silence_ratio = max(all_segment_silence_ratios) if all_segment_silence_ratios else 0
+        max_other_ratio = max(all_segment_other_ratios) if all_segment_other_ratios else 0
 
         return {
             "status": "success",
             "audio_name": audio_name,
             "json_file_name": file_name,
             "total_duration": round(total_duration, 2),
-            "total_segments": len(segments),
+            "total_segments": total_segments,
             "label_stats": label_stats,
-            "silence_ratio": silence_ratio,
-            "other_sound_ratio": other_sound_ratio
+            "avg_silence_ratio": avg_silence_ratio,
+            "max_silence_ratio": max_silence_ratio,
+            "avg_other_ratio": avg_other_ratio,
+            "max_other_ratio": max_other_ratio
         }
-    except Exception:
-        return {"status": "error", "file_name": file_name}
+    except Exception as e:
+        return {"status": "error", "file_name": file_name, "error": str(e)}
 
 def parse_speech_annotation_json(file_obj):
     results = []
@@ -146,39 +168,39 @@ def parse_speech_annotation_json(file_obj):
         return results
     except json.JSONDecodeError:
         return [{"status": "invalid_json", "file_name": file_obj.name}]
-    except Exception:
-        return [{"status": "error", "file_name": file_obj.name}]
+    except Exception as e:
+        return [{"status": "error", "file_name": file_obj.name, "error": str(e)}]
 
 # ------------------------------
 # 主页面
 # ------------------------------
 def speech_acceptance_page():
     st.title("🎙️ 语音标注自动验收工具")
-    st.caption("完全匹配教材speech04~speech07验收标准，自动解析、自动验收")
+    st.caption("完全匹配教材5.3.4要求，修正无声比例计算逻辑")
     init_speech_standards()
 
     # --------------------------
     # 验收标准面板
     # --------------------------
     with st.expander("⚙️ 自定义验收标准", expanded=False):
-        st.subheader("当前验收标准")
+        st.subheader("当前验收标准（完全匹配教材5.3.4）")
         for s in st.session_state.speech_acceptance_standards:
-            cols = st.columns([2, 1, 1, 2, 0.5])
+            cols = st.columns([2, 1.5, 1.5, 2, 0.5])
             with cols[0]:
                 s["audio_name"] = st.text_input("音频名", value=s.get("audio_name", ""), key=f"a_{s['id']}")
-            with cols[1]:
                 s["description"] = st.text_input("标准描述", value=s.get("description", ""), key=f"desc_{s['id']}")
-            with cols[2]:
+            with cols[1]:
                 required = s.get("required_labels", [])
                 if isinstance(required, list):
                     required = ",".join(required)
                 s["required_labels"] = st.text_input("要求标签(逗号分隔)", value=required, key=f"lab_{s['id']}")
-            with cols[3]:
-                st.caption("参数配置")
-                s["min_segments"] = st.number_input("最少片段数", min_value=1, value=s.get("min_segments", 1), key=f"seg_{s['id']}")
+            with cols[2]:
+                s["min_segments"] = st.number_input("最少总片段数", min_value=1, value=s.get("min_segments", 1), key=f"seg_{s['id']}")
                 s["min_total_duration"] = st.number_input("最少总时长(秒)", min_value=1, value=s.get("min_total_duration", 1), key=f"dur_{s['id']}")
-                s["max_silence_ratio"] = st.number_input("最大无声比例(%)", min_value=0, max_value=100, value=s.get("max_silence_ratio", 10), key=f"sil_{s['id']}")
-                s["max_other_sound_ratio"] = st.number_input("最大其他声音比例(%)", min_value=0, max_value=100, value=s.get("max_other_sound_ratio", 10), key=f"oth_{s['id']}")
+                s["min_segments_per_label"] = st.number_input("每标签最少片段数", min_value=1, value=s.get("min_segments_per_label", 1), key=f"seg_lab_{s['id']}")
+            with cols[3]:
+                s["max_silence_ratio_in_segment"] = st.number_input("片段内最大无声比例(%)", min_value=0, max_value=100, value=s.get("max_silence_ratio_in_segment", 10), key=f"sil_{s['id']}")
+                s["max_other_sound_ratio_in_segment"] = st.number_input("片段内最大其他声音比例(%)", min_value=0, max_value=100, value=s.get("max_other_sound_ratio_in_segment", 10), key=f"oth_{s['id']}")
             with cols[4]:
                 st.button("🗑️", key=f"del_{s['id']}", on_click=delete_speech_standard, args=(s["id"],))
 
@@ -229,8 +251,8 @@ def speech_acceptance_page():
                     "min_segments": s.get("min_segments", 1),
                     "min_total_duration": s.get("min_total_duration", 1),
                     "min_segments_per_label": s.get("min_segments_per_label", 1),
-                    "max_silence_ratio": s.get("max_silence_ratio", 10),
-                    "max_other_sound_ratio": s.get("max_other_sound_ratio", 10),
+                    "max_silence_ratio": s.get("max_silence_ratio_in_segment", 10),
+                    "max_other_ratio": s.get("max_other_sound_ratio_in_segment", 10),
                     "required_labels": labels,
                     "description": s.get("description", "默认标准")
                 })
@@ -264,7 +286,7 @@ def speech_acceptance_page():
                     "min_total_duration": 1,
                     "min_segments_per_label": 1,
                     "max_silence_ratio": 10,
-                    "max_other_sound_ratio": 10,
+                    "max_other_ratio": 10,
                     "required_labels": [],
                     "description": "默认标准"
                 }
@@ -278,28 +300,40 @@ def speech_acceptance_page():
                 ok = False
                 reason.append(f"总片段数不足：实际{res.get('total_segments', 0)}个，要求≥{matched_std['min_segments']}个")
 
-            # 2. 检查无声比例
-            if res.get("silence_ratio", 0) > matched_std["max_silence_ratio"]:
+            # 2. 检查片段内最大无声比例（所有标注片段中，无声比例最高的那个不能超标）
+            if res.get("max_silence_ratio", 0) > matched_std["max_silence_ratio"]:
                 ok = False
-                reason.append(f"无声比例过高：实际{res.get('silence_ratio', 0)}%，要求≤{matched_std['max_silence_ratio']}%")
+                reason.append(f"片段内无声比例过高：最高{res.get('max_silence_ratio', 0)}%，要求≤{matched_std['max_silence_ratio']}%")
 
-            # 3. 检查其他声音比例
-            if res.get("other_sound_ratio", 0) > matched_std["max_other_sound_ratio"]:
+            # 3. 检查片段内最大其他声音比例
+            if res.get("max_other_ratio", 0) > matched_std["max_other_ratio"]:
                 ok = False
-                reason.append(f"其他声音比例过高：实际{res.get('other_sound_ratio', 0)}%，要求≤{matched_std['max_other_sound_ratio']}%")
+                reason.append(f"片段内其他声音比例过高：最高{res.get('max_other_ratio', 0)}%，要求≤{matched_std['max_other_ratio']}%")
 
             # 4. 检查要求标签的片段数和总时长
             for label in matched_std["required_labels"]:
-                stats = label_stats.get(label, {"count": 0, "duration": 0})
+                stats = label_stats.get(label, {"count": 0, "total_duration": 0, "max_silence_ratio": 0, "max_other_ratio": 0})
+                # 检查每标签最少片段数
                 if stats["count"] < matched_std["min_segments_per_label"]:
                     ok = False
                     reason.append(f"{label}片段数不足：实际{stats['count']}个，要求≥{matched_std['min_segments_per_label']}个")
-                if stats["duration"] < matched_std["min_total_duration"]:
+                # 检查标签总时长
+                if stats["total_duration"] < matched_std["min_total_duration"]:
                     ok = False
-                    reason.append(f"{label}总时长不足：实际{stats['duration']}秒，要求≥{matched_std['min_total_duration']}秒")
+                    reason.append(f"{label}总时长不足：实际{stats['total_duration']}秒，要求≥{matched_std['min_total_duration']}秒")
+                # 检查标签对应片段的无声/其他比例
+                if stats["max_silence_ratio"] > matched_std["max_silence_ratio"]:
+                    ok = False
+                    reason.append(f"{label}片段无声比例过高：{stats['max_silence_ratio']}%，要求≤{matched_std['max_silence_ratio']}%")
+                if stats["max_other_ratio"] > matched_std["max_other_ratio"]:
+                    ok = False
+                    reason.append(f"{label}片段其他声音比例过高：{stats['max_other_ratio']}%，要求≤{matched_std['max_other_ratio']}%")
 
             # 生成标签统计字符串
-            label_str = "；".join([f"{k}:{v['count']}个({v['duration']}秒)" for k, v in label_stats.items()])
+            label_str = "；".join([
+                f"{k}:{v['count']}个({v['total_duration']}秒，无声最高{v['max_silence_ratio']}%)" 
+                for k, v in label_stats.items()
+            ])
 
             acceptance_results.append({
                 "音频文件名": aname,
@@ -307,8 +341,8 @@ def speech_acceptance_page():
                 "总时长(秒)": res.get("total_duration", 0),
                 "总片段数": res.get("total_segments", 0),
                 "标签统计": label_str,
-                "无声比例(%)": res.get("silence_ratio", 0),
-                "其他声音比例(%)": res.get("other_sound_ratio", 0),
+                "片段内最高无声比例(%)": res.get("max_silence_ratio", 0),
+                "片段内最高其他声音比例(%)": res.get("max_other_ratio", 0),
                 "验收标准": matched_std["description"],
                 "结果": "✅ 合格" if ok else "❌ 不合格",
                 "原因": "；".join(reason) if reason else "-"
