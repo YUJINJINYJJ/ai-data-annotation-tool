@@ -28,6 +28,13 @@ def json_keyword_search_page():
                 height=150
             )
         
+        # 新增：数组处理方式开关
+        split_array = st.checkbox(
+            "拆分JSON数组为独立条目",
+            value=False,
+            help="关闭：整个JSON文件作为一个整体统计；开启：数组中的每个元素作为独立条目"
+        )
+        
         max_workers = st.slider("⚡ 并行处理线程数", 2, 16, 8, help="数值越大处理越快")
         st.divider()
         st.caption("💡 支持批量上传JSON文件，本地运行可输入文件夹路径")
@@ -102,7 +109,10 @@ def json_keyword_search_page():
         with st.spinner(f"🔍 正在批量处理 {len(files_to_process)} 个文件..."):
             all_results = []
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(process_single_json, f, targets, is_up): (f, is_up) for f, is_up in files_to_process}
+                futures = {
+                    executor.submit(process_single_json, f, targets, is_up, split_array): (f, is_up) 
+                    for f, is_up in files_to_process
+                }
                 for future in as_completed(futures):
                     all_results.extend(future.result())
         
@@ -264,8 +274,8 @@ def json_keyword_search_page():
         
         st.success("✅ 批量匹配完成！点击上方按钮下载需要的报告")
 
-# JSON匹配辅助函数（支持数组根结构）
-def process_single_json(file_obj, targets, is_uploaded=True):
+# JSON匹配辅助函数（支持整体/拆分两种模式）
+def process_single_json(file_obj, targets, is_uploaded=True, split_array=False):
     results = []
     try:
         if is_uploaded:
@@ -279,22 +289,38 @@ def process_single_json(file_obj, targets, is_uploaded=True):
             file_name = os.path.basename(file_obj)
             file_path = file_obj
 
-        # 支持根为数组或单个对象
-        items = json_data if isinstance(json_data, list) else [json_data]
-        
-        for idx, item in enumerate(items):
-            item_results = search_json_data(item, targets)
+        if split_array and isinstance(json_data, list):
+            # 拆分模式：数组每个元素作为独立条目
+            for idx, item in enumerate(json_data):
+                item_results = search_json_data(item, targets)
+                file_count = {t: 0 for t in targets}
+                match_values = []
+                for res in item_results:
+                    file_count[res["keyword"]] += 1
+                    match_values.append(res["value"])
+                
+                results.append({
+                    "status": "success",
+                    "file_path": file_path,
+                    "file_name": f"{file_name} (第{idx+1}个)",
+                    "total_match": len(item_results),
+                    "keyword_count": file_count,
+                    "match_values": match_values
+                })
+        else:
+            # 整体模式：整个文件作为一个条目（默认）
+            all_results = search_json_data(json_data, targets)
             file_count = {t: 0 for t in targets}
             match_values = []
-            for res in item_results:
+            for res in all_results:
                 file_count[res["keyword"]] += 1
                 match_values.append(res["value"])
             
             results.append({
                 "status": "success",
                 "file_path": file_path,
-                "file_name": f"{file_name} (第{idx+1}个)",
-                "total_match": len(item_results),
+                "file_name": file_name,
+                "total_match": len(all_results),
                 "keyword_count": file_count,
                 "match_values": match_values
             })
