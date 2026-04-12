@@ -24,26 +24,49 @@ st.set_page_config(
 # 自定义样式
 CUSTOM_CSS = """
 <style>
-    /* 主色调 */
+    /* 主色调（明暗模式通用） */
     :root {
         --primary-color: #1E88E5;
         --success-color: #4CAF50;
         --warning-color: #FF9800;
         --danger-color: #F44336;
-        --bg-color: #FAFAFA;
+    }
+    
+    /* 浅色模式 */
+    @media (prefers-color-scheme: light) {
+        :root {
+            --bg-color: #FAFAFA;
+            --card-bg-color: #F5F5F5;
+            --text-primary-color: #212121;
+            --text-secondary-color: #757575;
+            --border-color: #E0E0E0;
+            --hover-bg-color: #E3F2FD;
+        }
+    }
+    
+    /* 深色模式（核心修复） */
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg-color: #0E1117;
+            --card-bg-color: #262730;
+            --text-primary-color: #FAFAFA;
+            --text-secondary-color: #B0B0B0;
+            --border-color: #3A3A3A;
+            --hover-bg-color: #1E3A5F;
+        }
     }
     
     /* 标题样式 */
     .stTitle {
         font-size: 2rem !important;
         font-weight: 600 !important;
-        color: #1565C0 !important;
+        color: var(--primary-color) !important;
     }
     
     /* 副标题 */
     .stMarkdown h3 {
-        color: #424242 !important;
-        border-bottom: 2px solid #E3F2FD;
+        color: var(--text-primary-color) !important;
+        border-bottom: 2px solid var(--hover-bg-color);
         padding-bottom: 0.5rem;
     }
     
@@ -66,7 +89,7 @@ CUSTOM_CSS = """
     
     /* 指标卡片 */
     .stMetric > div {
-        background-color: #F5F5F5;
+        background-color: var(--card-bg-color) !important;
         border-radius: 8px;
         padding: 1rem;
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
@@ -74,67 +97,97 @@ CUSTOM_CSS = """
     
     .stMetric label {
         font-size: 0.9rem !important;
-        color: #757575 !important;
+        color: var(--text-secondary-color) !important;
     }
     
     .stMetric [data-testid="stMetricValue"] {
         font-size: 1.8rem !important;
         font-weight: 600 !important;
+        color: var(--text-primary-color) !important;
     }
     
-    /* 侧边栏 */
+    /* 侧边栏（核心修复：动态背景色） */
     section[data-testid="stSidebar"] {
-        background-color: #FAFAFA !important;
+        background-color: var(--card-bg-color) !important;
+    }
+    
+    /* 侧边栏文字颜色适配 */
+    section[data-testid="stSidebar"] .stMarkdown,
+    section[data-testid="stSidebar"] .stRadio label,
+    section[data-testid="stSidebar"] .stCaption {
+        color: var(--text-primary-color) !important;
     }
     
     /* 上传区域 */
     .stFileUploader {
-        border: 2px dashed #E0E0E0;
+        border: 2px dashed var(--border-color);
         border-radius: 8px;
         padding: 1rem;
-        background-color: #FAFAFA;
+        background-color: var(--card-bg-color);
     }
     
     /* 表格悬停效果 */
     .stDataFrame tbody tr:hover {
-        background-color: #E3F2FD !important;
+        background-color: var(--hover-bg-color) !important;
     }
     
     /* 成功提示 */
     .stSuccess {
         background-color: #E8F5E9 !important;
         border-left: 4px solid var(--success-color) !important;
+        color: #1B5E20 !important;
     }
     
     /* 错误提示 */
     .stError {
         background-color: #FFEBEE !important;
         border-left: 4px solid var(--danger-color) !important;
+        color: #B71C1C !important;
     }
     
     /* 警告提示 */
     .stWarning {
         background-color: #FFF3E0 !important;
         border-left: 4px solid var(--warning-color) !important;
+        color: #E65100 !important;
     }
     
     /* 信息提示 */
     .stInfo {
         background-color: #E3F2FD !important;
         border-left: 4px solid var(--primary-color) !important;
+        color: #0D47A1 !important;
     }
     
     /* 分隔线 */
     hr {
-        border-color: #E0E0E0 !important;
+        border-color: var(--border-color) !important;
     }
     
     /* 页脚 */
     .footer {
         text-align: center;
         padding: 1rem;
-        color: #9E9E9E;
+        color: var(--text-secondary-color);
         font-size: 0.85rem;
+    }
+    
+    /* 输入框样式适配 */
+    .stTextInput input,
+    .stNumberInput input,
+    .stTextArea textarea {
+        background-color: var(--card-bg-color) !important;
+        color: var(--text-primary-color) !important;
+        border-color: var(--border-color) !important;
+    }
+    
+    /* 滑块样式适配 */
+    .stSlider [data-testid="stSliderThumb"] {
+        background-color: var(--primary-color) !important;
+    }
+    
+    .stSlider [data-testid="stSliderTrack"] {
+        background-color: var(--border-color) !important;
     }
 </style>
 """
