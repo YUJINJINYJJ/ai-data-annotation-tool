@@ -13,6 +13,7 @@ from utils import (
     create_csv_in_memory, format_duration, get_timestamp_filename,
     parse_keywords_input, ProcessingStats, logger
 )
+from folder_uploader import folder_uploader
 
 # 默认语音验收标准
 DEFAULT_SPEECH_STANDARDS = [
@@ -233,6 +234,36 @@ def parse_speech_annotation_json(file_obj) -> List[Dict[str, Any]]:
         return [{"status": "invalid_json", "file_name": file_name, "error": "JSON格式错误"}]
     except Exception as e:
         logger.error(f"文件处理错误 [{file_name}]: {str(e)}")
+        return [{"status": "error", "file_name": file_name, "error": str(e)}]
+    
+    return results
+
+def parse_speech_annotation_json_from_path(file_path: str) -> List[Dict[str, Any]]:
+    """
+    从文件路径解析语音标注 JSON 文件
+    
+    Args:
+        file_path: 文件的完整路径
+    
+    Returns:
+        解析结果列表
+    """
+    results = []
+    file_name = os.path.basename(file_path)
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            json_data = json.load(f)
+        items = json_data if isinstance(json_data, list) else [json_data]
+        
+        for item in items:
+            results.append(parse_single_speech_annotation(item, file_name))
+            
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON 解析错误 [{file_path}]: {str(e)}")
+        return [{"status": "invalid_json", "file_name": file_name, "error": "JSON格式错误"}]
+    except Exception as e:
+        logger.error(f"文件处理错误 [{file_path}]: {str(e)}")
         return [{"status": "error", "file_name": file_name, "error": str(e)}]
     
     return results
@@ -473,19 +504,17 @@ def speech_acceptance_page() -> None:
     # --------------------------
     st.subheader("📤 上传标注文件")
     
-    uploaded_jsons = st.file_uploader(
-        "选择语音标注 JSON 文件",
-        type="json",
-        accept_multiple_files=True,
-        key="speech_uploader"
+    # 使用文件夹上传组件
+    selected_files = folder_uploader(
+        "选择包含语音标注 JSON 文件的文件夹",
+        file_extensions=[".json"],
+        max_file_size_mb=100,
+        key="speech_folder_uploader"
     )
     
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        if st.button("🗑️ 清空上传文件", use_container_width=True):
-            if "speech_uploader" in st.session_state:
-                del st.session_state.speech_uploader
-            st.rerun()
+    # 保存到会话状态
+    if selected_files:
+        st.session_state["speech_selected_files"] = selected_files
     # 验收信息
     st.subheader("📝 验收信息")
     col1, col2 = st.columns(2)
@@ -494,13 +523,28 @@ def speech_acceptance_page() -> None:
     with col2:
         inspection_time = st.date_input("验收时间", value=datetime.now())
 
+    # 获取选中的文件
+    speech_selected_files = st.session_state.get("speech_selected_files", [])
+    
+    # 显示已选择文件数量
+    if speech_selected_files:
+        st.info(f"✅ 已选择 {len(speech_selected_files)} 个文件")
+    
     # --------------------------
     # 执行验收
     # --------------------------
-    if uploaded_jsons and st.button("🚀 开始自动验收", type="primary", use_container_width=True):
+    has_files = (speech_selected_files and len(speech_selected_files) > 0) or (selected_files and len(selected_files) > 0)
+    if has_files and st.button("🚀 开始自动验收", type="primary", use_container_width=True):
         if not inspector:
             st.error("❌ 请输入验收员姓名！")
             st.stop()
+        
+        # 使用选中的文件（优先从会话状态获取）
+        files_to_process = speech_selected_files if speech_selected_files else selected_files
+        
+        # 提取文件路径（folder_uploader返回的是字典，需要提取path字段）
+        files_to_process = [f["path"] if isinstance(f, dict) else f for f in files_to_process]
+        
         # 构建标准列表
         standard_list = []
         for s in get_speech_standards():
@@ -530,8 +574,8 @@ def speech_acceptance_page() -> None:
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
-                    executor.submit(parse_speech_annotation_json, f): f 
-                    for f in uploaded_jsons
+                    executor.submit(parse_speech_annotation_json_from_path, file_path): file_path 
+                    for file_path in files_to_process
                 }
                 completed = 0
                 total = len(futures)

@@ -13,6 +13,7 @@ from utils import (
     get_timestamp_filename, parse_keywords_input, parse_threshold_input,
     ProcessingStats, logger
 )
+from folder_uploader import folder_uploader
 
 
 # ------------------------------
@@ -269,33 +270,30 @@ def json_keyword_search_page() -> None:
     # --------------------------
     st.subheader("📤 上传 JSON 文件")
     
-    tab1, tab2 = st.tabs(["📤 上传文件", "📂 本地文件夹（仅本地运行）"])
+    # 使用文件夹上传组件
+    selected_files = folder_uploader(
+        "选择包含 JSON 文件的文件夹",
+        file_extensions=[".json"],
+        max_file_size_mb=100,
+        key="keyword_search_folder_uploader"
+    )
+    
+    # 保存到会话状态
+    if selected_files:
+        st.session_state["keyword_selected_files"] = selected_files
 
-    with tab1:
-        uploaded_files = st.file_uploader(
-            "选择多个 JSON 文件",
-            type="json",
-            accept_multiple_files=True,
-            key="keyword_uploader"
-        )
-        
-        col1, col2 = st.columns([3, 1])
-        with col2:
-            if st.button("🗑️ 清空上传文件", use_container_width=True):
-                if "keyword_uploader" in st.session_state:
-                    del st.session_state.keyword_uploader
-                st.rerun()
-
-    with tab2:
-        folder_path = st.text_input(
-            "输入本地 JSON 文件夹绝对路径",
-            placeholder="例如：/home/user/data/json_files"
-        )
-
+    # 获取选中的文件
+    keyword_selected_files = st.session_state.get("keyword_selected_files", [])
+    
+    # 显示已选择文件数量
+    if keyword_selected_files:
+        st.info(f"✅ 已选择 {len(keyword_selected_files)} 个文件")
+    
     # --------------------------
     # 执行匹配
     # --------------------------
-    if st.button("🚀 开始批量匹配", type="primary", use_container_width=True):
+    has_files = (keyword_selected_files and len(keyword_selected_files) > 0) or (selected_files and len(selected_files) > 0)
+    if has_files and st.button("🚀 开始批量匹配", type="primary", use_container_width=True):
         # 验证关键词输入
         if not keyword_input.strip():
             st.error("❌ 请输入查找关键词！")
@@ -313,20 +311,15 @@ def json_keyword_search_page() -> None:
             if threshold_dict:
                 st.info(f"📊 已设置 {len(threshold_dict)} 个关键词的阈值")
         
-        # 收集待处理文件
-        files_to_process = []
-        if uploaded_files:
-            files_to_process = [(f, True) for f in uploaded_files]
-        
-        if folder_path and os.path.isdir(folder_path):
-            for root, _, files in os.walk(folder_path):
-                for f in files:
-                    if f.lower().endswith(".json"):
-                        files_to_process.append((os.path.join(root, f), False))
+        # 使用选中的文件（优先从会话状态获取）
+        files_to_process = keyword_selected_files if keyword_selected_files else selected_files
         
         if not files_to_process:
             st.error("❌ 未找到任何 JSON 文件！")
             st.stop()
+        
+        # 提取文件路径（folder_uploader返回的是字典，需要提取path字段）
+        files_to_process = [f["path"] if isinstance(f, dict) else f for f in files_to_process]
         
         # 并行处理
         with st.spinner(f"🔍 正在处理 {len(files_to_process)} 个文件..."):
@@ -336,9 +329,9 @@ def json_keyword_search_page() -> None:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(
-                        process_single_json, f, targets, is_up, split_array
-                    ): (f, is_up) 
-                    for f, is_up in files_to_process
+                        process_single_json, file_path, targets, False, split_array
+                    ): file_path 
+                    for file_path in files_to_process
                 }
                 
                 completed = 0

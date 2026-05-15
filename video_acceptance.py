@@ -13,6 +13,7 @@ from utils import (
     create_csv_in_memory, format_duration, get_timestamp_filename,
     ProcessingStats, logger
 )
+from folder_uploader import folder_uploader
 # 默认视频验收标准
 DEFAULT_VIDEO_STANDARDS = [
     {
@@ -74,6 +75,10 @@ def parse_single_video_annotation(item: Dict[str, Any], file_name: str) -> Dict[
     """
     解析单个视频标注数据
     
+    支持两种数据格式：
+    格式1: 包含 video_url 和 box 数组的格式
+    格式2: 包含 video_name、total_frames 和 annotations 的格式
+    
     Args:
         item: 单条标注数据
         file_name: 来源文件名
@@ -82,34 +87,68 @@ def parse_single_video_annotation(item: Dict[str, Any], file_name: str) -> Dict[
         解析结果字典
     """
     try:
-        # 从 video_url 提取视频文件名
-        video_url = item.get("video_url", "")
-        video_name = os.path.basename(video_url) if video_url else f"{file_name}_未知视频"
+        # 尝试格式2：包含 video_name、total_frames 和 annotations 的格式
+        video_name = item.get("video_name", "")
         
-        # 解析 box 数组（每个 box 是一个追踪目标）
-        box_list = item.get("box", [])
-        total_targets = len(box_list)
+        if video_name:
+            # 使用格式2解析
+            total_frames = item.get("total_frames", 0)
+            annotations = item.get("annotations", [])
+            metadata = item.get("metadata", {})
+            duration = metadata.get("duration", 0.0)
+            
+            # 统计目标数量和有效帧数
+            target_ids = set()
+            enabled_frames = set()
+            all_labels = []
+            
+            for annotation in annotations:
+                frame_id = annotation.get("frame_id", 0)
+                targets = annotation.get("targets", [])
+                
+                for target in targets:
+                    target_id = target.get("id", "")
+                    if target_id:
+                        target_ids.add(target_id)
+                        enabled_frames.add(frame_id)
+                    
+                    label = target.get("label", "")
+                    if label:
+                        all_labels.append(label)
+            
+            total_targets = len(target_ids)
+            max_enabled_frames = len(enabled_frames)
+            
+        else:
+            # 格式1：从 video_url 提取视频文件名
+            video_url = item.get("video_url", "")
+            video_name = os.path.basename(video_url) if video_url else f"{file_name}_未知视频"
+            
+            # 解析 box 数组（每个 box 是一个追踪目标）
+            box_list = item.get("box", [])
+            total_targets = len(box_list)
+            
+            all_enabled_frames: List[int] = []
+            all_labels: List[str] = []
+            total_frames = 0
+            duration = 0.0
+            for idx, box in enumerate(box_list):
+                sequence = box.get("sequence", [])
+                
+                # 统计启用的帧数
+                enabled_count = sum(1 for frame in sequence if frame.get("enabled", True))
+                all_enabled_frames.append(enabled_count)
+                
+                # 收集标签
+                labels = box.get("labels", [])
+                all_labels.extend(labels)
+                
+                # 从第一个 box 获取视频信息
+                if idx == 0:
+                    total_frames = box.get("framesCount", 0)
+                    duration = box.get("duration", 0)
+            max_enabled_frames = max(all_enabled_frames) if all_enabled_frames else 0
         
-        all_enabled_frames: List[int] = []
-        all_labels: List[str] = []
-        total_frames = 0
-        duration = 0.0
-        for idx, box in enumerate(box_list):
-            sequence = box.get("sequence", [])
-            
-            # 统计启用的帧数
-            enabled_count = sum(1 for frame in sequence if frame.get("enabled", True))
-            all_enabled_frames.append(enabled_count)
-            
-            # 收集标签
-            labels = box.get("labels", [])
-            all_labels.extend(labels)
-            
-            # 从第一个 box 获取视频信息
-            if idx == 0:
-                total_frames = box.get("framesCount", 0)
-                duration = box.get("duration", 0)
-        max_enabled_frames = max(all_enabled_frames) if all_enabled_frames else 0
         return {
             "status": "success",
             "video_name": video_name,
@@ -153,6 +192,38 @@ def parse_video_annotation_json(file_obj) -> List[Dict[str, Any]]:
         return [{"status": "error", "file_name": file_name, "error": str(e)}]
     
     return results
+
+
+def parse_video_annotation_json_from_path(file_path: str) -> List[Dict[str, Any]]:
+    """
+    解析视频标注 JSON 文件（从文件路径）
+    
+    Args:
+        file_path: 文件路径
+    
+    Returns:
+        解析结果列表
+    """
+    results = []
+    file_name = os.path.basename(file_path)
+    
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            json_data = json.load(f)
+        items = json_data if isinstance(json_data, list) else [json_data]
+        
+        for item in items:
+            results.append(parse_single_video_annotation(item, file_name))
+            
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON 解析错误 [{file_name}]: {str(e)}")
+        return [{"status": "invalid_json", "file_name": file_name, "error": "JSON格式错误"}]
+    except Exception as e:
+        logger.error(f"文件处理错误 [{file_name}]: {str(e)}")
+        return [{"status": "error", "file_name": file_name, "error": str(e)}]
+    
+    return results
+
 # ------------------------------
 # 验收逻辑
 # ------------------------------
@@ -310,19 +381,17 @@ def video_acceptance_page() -> None:
     # --------------------------
     st.subheader("📤 上传标注文件")
     
-    uploaded_jsons = st.file_uploader(
-        "选择视频标注 JSON 文件",
-        type="json",
-        accept_multiple_files=True,
-        key="video_uploader"
+    # 使用文件夹上传组件
+    uploaded_files = folder_uploader(
+        label="选择视频标注文件夹",
+        key="video_folder_uploader",
+        file_extensions=[".json"],
+        max_file_size_mb=100
     )
     
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        if st.button("🗑️ 清空上传文件", use_container_width=True):
-            if "video_uploader" in st.session_state:
-                del st.session_state.video_uploader
-            st.rerun()
+    # 将选中的文件保存到会话状态供后续处理
+    if uploaded_files:
+        st.session_state["video_selected_files"] = uploaded_files
     # 验收信息
     st.subheader("📝 验收信息")
     col1, col2 = st.columns(2)
@@ -333,10 +402,20 @@ def video_acceptance_page() -> None:
     # --------------------------
     # 执行验收
     # --------------------------
-    if uploaded_jsons and st.button("🚀 开始自动验收", type="primary", use_container_width=True):
+    selected_files = st.session_state.get("video_selected_files", [])
+    
+    # 显示已选择的文件数
+    if selected_files:
+        st.info(f"✅ 已选择 {len(selected_files)} 个文件")
+    
+    if (selected_files or uploaded_files) and st.button("🚀 开始自动验收", type="primary", use_container_width=True):
         if not inspector:
             st.error("❌ 请输入验收员姓名！")
             st.stop()
+        
+        # 使用选中的文件
+        files_to_process = selected_files if selected_files else uploaded_files
+        
         # 构建标准列表
         standard_list = []
         for s in get_video_standards():
@@ -356,10 +435,12 @@ def video_acceptance_page() -> None:
             all_parse_results = []
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(parse_video_annotation_json, f): f 
-                    for f in uploaded_jsons
-                }
+                futures = {}
+                for file_info in files_to_process:
+                    file_path = file_info["path"]
+                    # 打开文件并创建类文件对象
+                    futures[executor.submit(parse_video_annotation_json_from_path, file_path)] = file_path
+                
                 completed = 0
                 total = len(futures)
                 
